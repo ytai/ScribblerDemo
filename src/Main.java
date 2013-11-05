@@ -1,3 +1,31 @@
+/*
+ * Copyright 2013 Ytai Ben-Tsvi. All rights reserved.
+ *  
+ * 
+ * Redistribution and use in source and binary forms, with or without modification, are
+ * permitted provided that the following conditions are met:
+ * 
+ *    1. Redistributions of source code must retain the above copyright notice, this list of
+ *       conditions and the following disclaimer.
+ * 
+ *    2. Redistributions in binary form must reproduce the above copyright notice, this list
+ *       of conditions and the following disclaimer in the documentation and/or other materials
+ *       provided with the distribution.
+ * 
+ * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
+ * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL ARSHAN POURSOHI OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * 
+ * The views and conclusions contained in the software and documentation are those of the
+ * authors and should not be interpreted as representing official policies, either expressed
+ * or implied.
+ */
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Container;
@@ -26,80 +54,113 @@ import org.opencv.core.Size;
 import org.opencv.highgui.Highgui;
 import org.opencv.imgproc.Imgproc;
 
+/**
+ * This is a demo of my scribbler algorithm that vectorizes a raster image in an interesting and
+ * artistic way. Provide input filenames as command line arguments. Play with the constants below
+ * for different results.
+ * 
+ * @author ytai
+ * 
+ */
 public class Main {
-	private static Random random_ = new Random();
-	private static final double COVERAGE = 0.2;
+	/**
+	 * This tells the algorithm when to stop: when the average darkness in the image is below this
+	 * threshold.
+	 */
+	private static final double THRESHOLD = 0.2;
+
+	/**
+	 * Since we're doing all the image calculations in fixed-point, this is a scaling factor we are
+	 * going to use.
+	 */
 	private static final double GRAY_RESOLUTION = 128;
 
 	/**
-	 * @param args
-	 * @throws IOException
-	 * @throws InterruptedException
+	 * This is the ratio between the line width to the overall output image width. It is important,
+	 * since it tells our algorithm how much darkness a single line contributes.
 	 */
-	public static void main(String[] args) throws IOException, InterruptedException {
-		if (args.length != 1) {
-			System.exit(1);
-		}
+	private static final double NATIVE_RESOLUTION = 450.0;
 
-		Mat original = Highgui.imread(args[0]);
+	/**
+	 * Set to true for one continuous stroke, false for discontinuous lines.
+	 */
+	private static final boolean CONTINUOUS = true;
+
+	/**
+	 * By how much to down-sample the image.
+	 */
+	private static final double SCALE = 0.2;
+
+	/**
+	 * How many candidates to consider for each line segment.
+	 */
+	private static final int NUM_CANDIDATES = 1000;
+
+	private static Random random_ = new Random();
+
+	static {
+		System.loadLibrary("opencv_java246");
+	}
+
+	public static void main(String[] args) throws IOException, InterruptedException {
+		for (String arg : args) {
+			run(arg);
+		}
+	}
+
+	private static void run(String filename) {
+		Mat original = Highgui.imread(filename);
+
 		// Convert to gray-scale.
 		Imgproc.cvtColor(original, original, Imgproc.COLOR_BGR2GRAY);
-		// Initial resize, just for display purposes.
-		final double scale = 600.0 / original.cols();
-		Imgproc.resize(original, original, new Size(), scale, scale, Imgproc.INTER_LINEAR);
 
-		// Dummy image, for display purposes.
-		Mat out = new Mat();
-		original.convertTo(out, CvType.CV_32FC1);
-		Core.multiply(out, new Scalar(1.0 / 255), out);
+		// Resize to native resolution.
+		Mat preview = new Mat();
+		final double scale = NATIVE_RESOLUTION / original.cols();
+		Imgproc.resize(original, preview, new Size(), scale, scale, Imgproc.INTER_AREA);
 
 		// Down-sample.
-		final double SCALE = 0.2;
 		Mat in = new Mat();
-		Imgproc.resize(out, in, new Size(), SCALE, SCALE, Imgproc.INTER_LANCZOS4);
-
-		// Generate preview.
-		Imgproc.GaussianBlur(out, out, new Size(), 1 / SCALE);
-		Core.subtract(Mat.ones(out.size(), CvType.CV_32FC1), out, out);
-		Core.subtract(out, new Scalar(COVERAGE), out);
-		Core.subtract(Mat.ones(out.size(), CvType.CV_32FC1), out, out);
-		Core.multiply(out, new Scalar(255), out);
-		out.convertTo(out, CvType.CV_8UC1);
+		Imgproc.resize(preview, in, new Size(), SCALE, SCALE, Imgproc.INTER_AREA);
 
 		// Negative: bigger number = darker.
-		Core.subtract(Mat.ones(in.size(), CvType.CV_32FC1), in, in);
-		final double LINES_PER_PIXEL = 600.0 / in.cols();
+		final Mat scalar = new Mat(1, 1, CvType.CV_64FC1).setTo(new Scalar(255));
+		Core.subtract(scalar, in, in);
 
-		Core.multiply(in, new Scalar(LINES_PER_PIXEL * GRAY_RESOLUTION), in);
+		// Convert to S16: we need more color resolution and negative numbers.
 		in.convertTo(in, CvType.CV_16SC1);
+
+		// We scale such that for each line we can subtract GRAY_RESOLUTION and it will correspond
+		// to darkening by SCALE.
+		Core.multiply(in, new Scalar(GRAY_RESOLUTION / SCALE / 255), in);
 
 		try {
 			UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
 		} catch (Exception e) {
 		}
-		final JFrame frame = new JFrame("Scribble");
+		final JFrame frame = new JFrame("Scribble: " + filename);
 		frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
 
 		Container contentPane = frame.getContentPane();
 		contentPane.setLayout(new BoxLayout(contentPane, BoxLayout.X_AXIS));
 
-		contentPane.add(new JLabel(new ImageIcon(matToBufferedImage(out))));
-		ImageComponent component = new ImageComponent(matToBufferedImage(out));
+		contentPane.add(new JLabel(new ImageIcon(matToBufferedImage(preview))));
+		ImageComponent component = new ImageComponent(matToBufferedImage(preview));
 		contentPane.add(component);
 
 		frame.pack();
 		frame.setVisible(true);
 
+		// Now is the actual algorithm!
 		Point lastP = null;
-		Point[] scaledLine = new Point[2];
-		double residualDarkness = darkness(in) / LINES_PER_PIXEL;
+		double residualDarkness = average(in) / GRAY_RESOLUTION * SCALE;
 		double totalLength = 0;
 		int lines = 0;
 		component.hideImage();
-		while (residualDarkness > COVERAGE) {
-			Point[] bestLine = nextLine(in, 1000, lastP);
+		while (residualDarkness > THRESHOLD) {
+			final Point[] bestLine = nextLine(in, NUM_CANDIDATES, CONTINUOUS ? lastP : null);
+			final Point[] scaledLine = scaleLine(bestLine, 1 / SCALE);
 			lastP = bestLine[1];
-			scaleLine(bestLine, scaledLine, 1 / SCALE);
 			List<int[]> line = new ArrayList<int[]>(2);
 			line.add(new int[] { (int) scaledLine[0].x, (int) scaledLine[0].y });
 			line.add(new int[] { (int) scaledLine[1].x, (int) scaledLine[1].y });
@@ -107,44 +168,15 @@ public class Main {
 					- scaledLine[1].y);
 			component.addLine(line);
 			++lines;
-			residualDarkness = darkness(in) / LINES_PER_PIXEL;
+			residualDarkness = average(in) / GRAY_RESOLUTION * SCALE;
 			System.out.format("%d -- remaining darkness: %.0f%% length: %.1f\n", lines,
 					100 * residualDarkness, totalLength);
 		}
 	}
 
-	// private static Mat randomLines(Mat in, double scale, int numLines, int numAttemptsPerLine,
-	// boolean continuous) {
-	// // Core.subtract(in, new Scalar(0.5), in);
-	// Core.multiply(in, new Scalar(1 / scale), in);
-	//
-	// Mat out = Mat.zeros(in.size(), CvType.CV_8U);
-	// Imgproc.resize(in, in, new Size(0, 0), scale, scale, Imgproc.INTER_CUBIC);
-	// Mat outMask = Mat.zeros(out.size(), CvType.CV_8U);
-	// Point lastP = null;
-	// Point[] scaledLine = new Point[2];
-	// int lines = 0;
-	// while (lines < numLines) {
-	// Point[] bestLine = nextLine(in, numAttemptsPerLine, continuous ? lastP : null);
-	// lastP = bestLine[1];
-	// scaleLine(bestLine, scaledLine, 1 / scale);
-	// outMask.setTo(new Scalar(0));
-	// Core.line(outMask, scaledLine[0], scaledLine[1], new Scalar(1));
-	// out.setTo(new Scalar(1), outMask);
-	//
-	// ++lines;
-	// System.out.format("%d -- remaining: %f\n", lines, Core.sumElems(in).val[0]);
-	// }
-	//
-	// Imgproc.threshold(out, out, 0.5, 255, Imgproc.THRESH_BINARY_INV);
-	//
-	// Core.normalize(in, in, 0, 255, Core.NORM_MINMAX);
-	// return out;
-	// }
-
-	private static double darkness(Mat in) {
+	private static double average(Mat in) {
 		double total = Core.sumElems(in).val[0];
-		return total / in.cols() / in.rows() / 128;
+		return total / in.cols() / in.rows();
 	}
 
 	/**
@@ -165,7 +197,7 @@ public class Main {
 	 * @param startPoint
 	 *            Possibly, force the line to start at a certain point. In case of null, the line
 	 *            will comprise two random point.
-	 * @return The optimal line.
+	 * @return The best line.
 	 */
 	private static Point[] nextLine(Mat image, int numAttempts, Point startPoint) {
 		Mat mask = Mat.zeros(image.size(), CvType.CV_8U);
@@ -176,10 +208,12 @@ public class Main {
 		for (int i = 0; i < numAttempts; ++i) {
 			generateRandomLine(image.size(), startPoint, line);
 
+			// Calculate the score for this line as the average darkness over it.
+			// This way to calculate this is crazy inefficient, but compact...
 			mask.setTo(new Scalar(0));
 			Core.line(mask, line[0], line[1], new Scalar(GRAY_RESOLUTION));
-
 			double score = Core.mean(image, mask).val[0];
+
 			if (score > bestScore) {
 				bestScore = score;
 				Mat t = mask;
@@ -192,9 +226,11 @@ public class Main {
 		return bestLine;
 	}
 
-	private static void scaleLine(Point[] line, Point[] scaledLine, double scale) {
+	private static Point[] scaleLine(Point[] line, double scale) {
+		Point[] scaledLine = new Point[2];
 		scaledLine[0] = new Point(line[0].x * scale, line[0].y * scale);
 		scaledLine[1] = new Point(line[1].x * scale, line[1].y * scale);
+		return scaledLine;
 	}
 
 	private static void generateRandomLine(Size s, Point pStart, Point[] result) {
@@ -206,10 +242,6 @@ public class Main {
 		do {
 			result[1] = new Point(random_.nextDouble() * s.width, random_.nextDouble() * s.height);
 		} while (result[0].equals(result[1]));
-	}
-
-	static {
-		System.loadLibrary("opencv_java246");
 	}
 
 	private static class ImageComponent extends Component {
